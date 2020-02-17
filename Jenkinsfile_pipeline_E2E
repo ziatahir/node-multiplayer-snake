@@ -1,0 +1,89 @@
+pipeline {
+    
+	environment {
+        //This variable need be tested as string
+        doError = '1'
+    }
+   
+    agent any
+    
+    stages {
+	
+	    stage('Cloning-Git') {
+		   steps{
+		     script{
+			   // Delete workspace before build starts
+		       cleanWs()
+               // checkout code
+			   checkout scm
+		     }
+		   }
+        }
+	
+        stage('SAST Scan') {
+           steps {
+		      echo "SAST scan.."
+			  build 'security-sast-snyk-plugin'
+            }
+        }
+		
+		stage('Build-Tag-Post2dockerhub ') {
+		   steps{
+		     script{
+               customImage = docker.build("zia2090406/snake:$BUILD_NUMBER")
+			   docker.withRegistry('https://registry.hub.docker.com', 'docker_hub') {
+               customImage.push()
+		       }
+		     }
+           }
+	    }
+		
+		stage('Docker Image Scan') {
+           steps {
+		      echo "Docker Image scan.."
+			  build 'security-image-scanner-aquasec'
+            }
+        }
+		
+		stage('Create-Container&-Deploy') {
+           steps {
+
+			  sh '''
+			    # stop and remove container if container websnake is running
+				if [ "$(docker ps -q -f name=websnake)" ]; then
+				  docker stop websnake
+				  docker rm websnake
+			    fi
+				
+				# remove container if container websnake is stopped but not exited i.r port is still allocated
+				if [ "$(docker ps -aq -f status=exited -f name=websnake)" ]; then
+				  docker stop websnake
+				  docker rm websnake
+			    fi
+				
+		        # Deploy app on 3000 on container, accessible on 9099/80; mount volume -v local_server_path:container_directory
+				docker run -d --name websnake -p 80:3000 -v /home/ubuntu/app-test/node-multiplayer-snake/:/app zia2090406/snake:$BUILD_NUMBER
+ 			  '''
+            }
+        }
+		
+		stage('DAST Scan') {
+           steps {
+		      echo "DAST scan.."
+			  build 'security-dast-owasp_zap'
+            }
+        }
+        
+        
+    }
+    post {
+        always {
+            echo 'I will always say Hello again!'
+            
+            emailext body: "${currentBuild.currentResult}: Job ${env.JOB_NAME} build ${env.BUILD_NUMBER}\n More info at: ${env.BUILD_URL}",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'RequesterRecipientProvider']],
+                subject: "Jenkins Build ${currentBuild.currentResult}: Job ${env.JOB_NAME}"
+            
+        }
+    }
+}
